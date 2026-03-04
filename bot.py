@@ -107,7 +107,8 @@ async def receive_display_name(update: Update, context: ContextTypes.DEFAULT_TYP
         await update.message.reply_text(
             "⏳ <b>Ваша заявка отправлена!</b>\n\n"
             "Ожидайте подтверждения от администратора.\n\n"
-            "Если хотите написать администратору, просто отправьте сообщение сюда — оно будет переслано.",
+            "Если хотите написать администратору, просто отправьте сообщение сюда — оно будет переслано."
+            "Пока что вы можете зайти как user(пароль такой же)",
             parse_mode="HTML",
         )
     except Exception as e:
@@ -245,3 +246,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
