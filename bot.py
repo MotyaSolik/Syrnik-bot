@@ -1,5 +1,7 @@
 import logging
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup
+import os
+import re
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -10,14 +12,8 @@ from telegram.ext import (
     ContextTypes,
 )
 
-# ==============================
-# НАСТРОЙКИ — ЗАПОЛНИ ПЕРЕД ЗАПУСКОМ
-# ==============================
-import os
-
 BOT_TOKEN = os.environ["BOT_TOKEN"]
-ADMIN_CHAT_ID = int(os.environ["ADMIN_CHAT_ID"])          # твой личный Telegram chat_id (узнать через @userinfobot)
-# ==============================
+ADMIN_CHAT_ID = int(os.environ["ADMIN_CHAT_ID"])
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -25,24 +21,24 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Состояния диалога
+# Состояния диалога регистрации
 WAITING_LOGIN, WAITING_DISPLAY_NAME = range(2)
+
+# Хранилище: user_id -> данные пользователя
+user_data_store = {}
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Приветствие с кнопкой Регистрация."""
     keyboard = [[InlineKeyboardButton("📝 Регистрация", callback_data="register")]]
-    reply_markup = InlineKeyboardMarkup(keyboard)
     await update.message.reply_text(
         "👋 Добро пожаловать в <b>Сырники Wallet</b>!\n\n"
         "Нажмите кнопку ниже, чтобы зарегистрироваться.",
-        reply_markup=reply_markup,
+        reply_markup=InlineKeyboardMarkup(keyboard),
         parse_mode="HTML",
     )
 
 
 async def register_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Обработка нажатия кнопки Регистрация."""
     query = update.callback_query
     await query.answer()
     await query.edit_message_text(
@@ -54,14 +50,10 @@ async def register_button(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 
 async def receive_login(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Получаем логин, проверяем что он латиницей."""
     login = update.message.text.strip()
-
-    # Проверка: только латиница, цифры, _ и -
-    import re
     if not re.match(r"^[a-zA-Z0-9_\-]{3,32}$", login):
         await update.message.reply_text(
-            "❌ Неверный формат. Логин должен содержать только латинские буквы, цифры, _ или -\n"
+            "❌ Неверный формат. Только латинские буквы, цифры, _ или -\n"
             "Длина: от 3 до 32 символов.\n\nПопробуйте ещё раз:"
         )
         return WAITING_LOGIN
@@ -77,92 +69,146 @@ async def receive_login(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
 
 
 async def receive_display_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Получаем отображаемое имя и отправляем заявку админу."""
     display_name = update.message.text.strip()
     login = context.user_data.get("login", "—")
     user = update.effective_user
 
-    context.user_data["display_name"] = display_name
-    context.user_data["telegram_id"] = user.id
-    context.user_data["telegram_username"] = f"@{user.username}" if user.username else "—"
+    # Сохраняем данные пользователя
+    user_data_store[user.id] = {
+        "login": login,
+        "display_name": display_name,
+        "telegram_id": user.id,
+        "telegram_username": f"@{user.username}" if user.username else "—",
+        "full_name": user.full_name,
+    }
 
-    # Кнопки для админа: подтверждение + связь с пользователем
-    bot_username = (await context.bot.get_me()).username
-    chat_link = f"https://t.me/{user.username}" if user.username else None
-
-    buttons = [
-        [InlineKeyboardButton("Зарегестрирован ✅", callback_data=f"approve_{user.id}")],
-        [InlineKeyboardButton(
-            "Связаться через бот 🔗",
-            url=chat_link if chat_link else f"tg://user?id={user.id}"
-        )],
-    ]
-    reply_markup = InlineKeyboardMarkup(buttons)
+    keyboard = [[InlineKeyboardButton("Зарегестрирован ✅", callback_data=f"approve_{user.id}")]]
 
     admin_text = (
         "🆕 <b>Новая заявка на регистрацию</b>\n\n"
-        f"👤 <b>Telegram:</b> {user.full_name} ({context.user_data['telegram_username']})\n"
+        f"👤 <b>Telegram:</b> {user.full_name} ({user_data_store[user.id]['telegram_username']})\n"
         f"🆔 <b>Telegram ID:</b> <code>{user.id}</code>\n"
         f"🔑 <b>Логин (ID):</b> <code>{login}</code>\n"
-        f"📛 <b>Отображаемое имя:</b> {display_name}"
+        f"📛 <b>Отображаемое имя:</b> {display_name}\n\n"
+        f"💬 Чтобы написать этому пользователю, используйте:\n"
+        f"<code>/msg {user.id} текст сообщения</code>"
     )
 
     try:
         await context.bot.send_message(
             chat_id=ADMIN_CHAT_ID,
             text=admin_text,
-            reply_markup=reply_markup,
+            reply_markup=InlineKeyboardMarkup(keyboard),
             parse_mode="HTML",
         )
         await update.message.reply_text(
             "⏳ <b>Ваша заявка отправлена!</b>\n\n"
-            "Ожидайте подтверждения от администратора. Мы уведомим вас, как только аккаунт будет активирован.",
+            "Ожидайте подтверждения от администратора.\n\n"
+            "Если хотите написать администратору, просто отправьте сообщение сюда — оно будет переслано.",
             parse_mode="HTML",
         )
     except Exception as e:
-        logger.error(f"Не удалось отправить сообщение админу: {e}")
-        await update.message.reply_text(
-            "⚠️ Произошла ошибка при отправке заявки. Попробуйте позже или свяжитесь с администратором."
-        )
+        logger.error(f"Ошибка отправки админу: {e}")
+        await update.message.reply_text("⚠️ Ошибка при отправке заявки. Попробуйте позже.")
 
     return ConversationHandler.END
 
 
 async def approve_user(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Админ нажимает 'Зарегестрирован ✅' — бот уведомляет пользователя."""
     query = update.callback_query
     await query.answer()
 
-    # Получаем telegram_id пользователя из callback_data
-    data = query.data  # "approve_<user_id>"
-    user_id = int(data.split("_")[1])
+    user_id = int(query.data.split("_")[1])
+
+    keyboard = [[InlineKeyboardButton("🌐 Войти на сайт", url="https://syrnik-wallet.netlify.app/")]]
 
     try:
         await context.bot.send_message(
             chat_id=user_id,
             text=(
                 "🎉 <b>Поздравляем!</b>\n\n"
-                "Ваш аккаунт зарегистрирован и вы можете заходить на сайт.\n\n"
-                "🌐 <b>Сырники Wallet</b> — добро пожаловать в систему!"
+                "Ваш аккаунт зарегистрирован и вы можете заходить на сайт!\n\n"
+                "Если есть вопросы — просто напишите сюда, администратор ответит."
             ),
+            reply_markup=InlineKeyboardMarkup(keyboard),
             parse_mode="HTML",
         )
-        # Обновляем сообщение у админа
-        original_text = query.message.text
         await query.edit_message_text(
-            text=original_text + "\n\n✅ <b>Подтверждено</b>",
+            text=query.message.text + "\n\n✅ <b>Подтверждено</b>",
             parse_mode="HTML",
         )
     except Exception as e:
-        logger.error(f"Не удалось уведомить пользователя {user_id}: {e}")
+        logger.error(f"Ошибка уведомления пользователя {user_id}: {e}")
         await query.edit_message_text(
             text=query.message.text + "\n\n⚠️ <b>Ошибка при уведомлении пользователя</b>",
             parse_mode="HTML",
         )
 
 
+async def user_message_to_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Пользователь пишет боту — сообщение пересылается админу."""
+    user = update.effective_user
+    text = update.message.text
+
+    # Не обрабатываем сообщения от самого админа
+    if user.id == ADMIN_CHAT_ID:
+        return
+
+    username = f"@{user.username}" if user.username else "—"
+    info = user_data_store.get(user.id)
+    login_info = f"🔑 Логин: <code>{info['login']}</code>\n" if info else ""
+
+    forward_text = (
+        f"💬 <b>Сообщение от пользователя</b>\n\n"
+        f"👤 {user.full_name} ({username})\n"
+        f"🆔 ID: <code>{user.id}</code>\n"
+        f"{login_info}\n"
+        f"📩 <b>Сообщение:</b>\n{text}\n\n"
+        f"<i>Ответить: <code>/msg {user.id} ваш ответ</code></i>"
+    )
+
+    try:
+        await context.bot.send_message(
+            chat_id=ADMIN_CHAT_ID,
+            text=forward_text,
+            parse_mode="HTML",
+        )
+        await update.message.reply_text("✉️ Ваше сообщение отправлено администратору.")
+    except Exception as e:
+        logger.error(f"Ошибка пересылки сообщения: {e}")
+
+
+async def admin_reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Админ отвечает пользователю через /msg <user_id> <текст>."""
+    if update.effective_user.id != ADMIN_CHAT_ID:
+        return
+
+    args = context.args
+    if not args or len(args) < 2:
+        await update.message.reply_text(
+            "❌ Использование: <code>/msg &lt;user_id&gt; текст сообщения</code>",
+            parse_mode="HTML",
+        )
+        return
+
+    try:
+        target_id = int(args[0])
+        message_text = " ".join(args[1:])
+
+        await context.bot.send_message(
+            chat_id=target_id,
+            text=f"📨 <b>Сообщение от администратора:</b>\n\n{message_text}",
+            parse_mode="HTML",
+        )
+        await update.message.reply_text(f"✅ Сообщение отправлено пользователю <code>{target_id}</code>.", parse_mode="HTML")
+    except ValueError:
+        await update.message.reply_text("❌ Неверный ID пользователя.")
+    except Exception as e:
+        logger.error(f"Ошибка отправки ответа: {e}")
+        await update.message.reply_text(f"⚠️ Ошибка: {e}")
+
+
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Отмена регистрации."""
     await update.message.reply_text("❌ Регистрация отменена. Напишите /start чтобы начать заново.")
     return ConversationHandler.END
 
@@ -180,8 +226,15 @@ def main() -> None:
     )
 
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("msg", admin_reply))
     app.add_handler(conv_handler)
     app.add_handler(CallbackQueryHandler(approve_user, pattern=r"^approve_\d+$"))
+
+    # Сообщения от пользователей пересылаются админу
+    app.add_handler(MessageHandler(
+        filters.TEXT & ~filters.COMMAND & ~filters.Chat(ADMIN_CHAT_ID),
+        user_message_to_admin
+    ))
 
     logger.info("Бот запущен...")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
