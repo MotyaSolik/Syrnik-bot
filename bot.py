@@ -82,7 +82,10 @@ async def receive_display_name(update: Update, context: ContextTypes.DEFAULT_TYP
         "full_name": user.full_name,
     }
 
-    keyboard = [[InlineKeyboardButton("Зарегестрирован ✅", callback_data=f"approve_{user.id}")]]
+    keyboard = [[
+        InlineKeyboardButton("Зарегестрирован ✅", callback_data=f"approve_{user.id}"),
+        InlineKeyboardButton("💬 Связаться", url=f"tg://user?id={user.id}"),
+    ]]
 
     admin_text = (
         "🆕 <b>Новая заявка на регистрацию</b>\n\n"
