@@ -272,15 +272,72 @@ async def do_register_user(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     except Exception as e:
         logger.error(f"Ошибка уведомления пользователя {user_id}: {e}")
 
-    # Update admin message — show link button
+    # Update admin message — show start balance button
     await query.edit_message_text(
         text=query.message.text + "\n\n✅ <b>Зарегистрирован!</b>",
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("🆙 Стартовый баланс", callback_data=f"startbal_{user_id}"),
             InlineKeyboardButton("💬 Написать", url=tg_link),
         ]])
     )
 
+
+
+async def give_start_balance(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Начислить 5 сырничков новому пользователю."""
+    query = update.callback_query
+    await query.answer()
+
+    if update.effective_user.id != ADMIN_CHAT_ID:
+        await query.answer("⛔ Только администратор.", show_alert=True)
+        return
+
+    user_id = int(query.data.split("_")[1])
+
+    try:
+        data = await fb_get("syrniki")
+        if not data:
+            await query.answer("❌ Ошибка Firebase", show_alert=True)
+            return
+
+        users = data.get("users", {})
+        if isinstance(users, list):
+            users = {str(i): u for i, u in enumerate(users)}
+
+        key = str(user_id)
+        if key not in users:
+            await query.answer("❌ Пользователь не найден в базе", show_alert=True)
+            return
+
+        users[key]["balance"] = users[key].get("balance", 0) + 5
+        await fb_set("syrniki/users", users)
+
+        # Notify user
+        try:
+            await context.bot.send_message(
+                chat_id=user_id,
+                text="🎁 <b>Тебе начислен стартовый баланс!</b>\n\n+5 🧀 сырничков на счёт!",
+                parse_mode="HTML",
+            )
+        except Exception as e:
+            logger.error(f"Ошибка уведомления о балансе: {e}")
+
+        # Update button — replace with done label
+        await query.edit_message_reply_markup(
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("✅ +5 🧀 начислено", callback_data="noop"),
+                InlineKeyboardButton("💬 Написать", url=f"tg://user?id={user_id}"),
+            ]])
+        )
+
+    except Exception as e:
+        logger.error(f"Ошибка start balance: {e}")
+        await query.answer(f"⚠️ Ошибка: {e}", show_alert=True)
+
+
+async def noop(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await update.callback_query.answer()
 
 async def user_message_to_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
@@ -366,6 +423,8 @@ def main() -> None:
     app.add_handler(conv_handler)
     # ВАЖНО: register_ должен быть до approve_ чтобы не перехватывало
     app.add_handler(CallbackQueryHandler(do_register_user, pattern=r"^register_\d+$"))
+    app.add_handler(CallbackQueryHandler(give_start_balance, pattern=r"^startbal_\d+$"))
+    app.add_handler(CallbackQueryHandler(noop, pattern=r"^noop$"))
 
     app.add_handler(MessageHandler(
         filters.TEXT & ~filters.COMMAND & ~filters.Chat(ADMIN_CHAT_ID),
