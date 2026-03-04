@@ -20,7 +20,7 @@ BOT_TOKEN = os.environ["BOT_TOKEN"]
 ADMIN_CHAT_ID = int(os.environ["ADMIN_CHAT_ID"])
 
 # Firebase
-FIREBASE_URL = "https://syrnik-wallet-default-rtdb.europe-west1.firebasedatabase.app"
+FIREBASE_URL = os.environ["FIREBASE_URL"]
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -29,7 +29,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Состояния диалога регистрации
-WAITING_LOGIN, WAITING_DISPLAY_NAME = range(2)
+WAITING_LOGIN, WAITING_DISPLAY_NAME, WAITING_PASSWORD = range(3)
 
 # Хранилище: user_id -> данные пользователя
 user_data_store = {}
@@ -60,9 +60,8 @@ async def fb_set(path: str, data) -> None:
         ) as r:
             await r.read()
 
-async def register_in_firebase(login: str, display: str, telegram_id: int) -> str:
-    """Добавляет пользователя в Firebase. Возвращает сгенерированный пароль."""
-    # Load existing db
+async def register_in_firebase(login: str, display: str, telegram_id: int, password: str, tg_username_raw: str = "") -> bool:
+    """Добавляет пользователя в Firebase. Возвращает False если логин занят."""
     data = await fb_get("syrniki")
     if not data:
         data = {}
@@ -74,11 +73,11 @@ async def register_in_firebase(login: str, display: str, telegram_id: int) -> st
     # Check login uniqueness
     for u in users.values():
         if u.get("login", "").lower() == login.lower():
-            return None  # already exists
+            return False  # already exists
 
-    password = gen_password()
-    user_id = telegram_id  # use telegram ID as unique ID
+    user_id = telegram_id
 
+    tg_username = tg_username_raw.lstrip("@") if tg_username_raw and tg_username_raw != "—" else ""
     users[str(user_id)] = {
         "id": user_id,
         "login": login.lower(),
@@ -87,13 +86,14 @@ async def register_in_firebase(login: str, display: str, telegram_id: int) -> st
         "balance": 0,
         "emoji": emoji_for(login),
         "telegramId": telegram_id,
+        "telegramUsername": tg_username,
         "isPrivate": False,
         "bgColor": "yellow",
         "privileges": [],
     }
 
     await fb_set("syrniki/users", users)
-    return password
+    return True
 
 
 # ── Bot handlers ──
@@ -140,30 +140,55 @@ async def receive_login(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
 
 async def receive_display_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     display_name = update.message.text.strip()
+    context.user_data["display_name"] = display_name
+    await update.message.reply_text(
+        f"✅ Имя <b>{display_name}</b> принято!\n\n"
+        "Придумайте <b>пароль</b> для входа на сайт:\n"
+        "<i>Минимум 4 символа</i>",
+        parse_mode="HTML",
+    )
+    return WAITING_PASSWORD
+
+
+async def receive_password(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    password = update.message.text.strip()
+    if len(password) < 4:
+        await update.message.reply_text(
+            "❌ Пароль слишком короткий. Минимум 4 символа.\n\nПопробуйте ещё раз:"
+        )
+        return WAITING_PASSWORD
+
     login = context.user_data.get("login", "—")
+    display_name = context.user_data.get("display_name", "—")
     user = update.effective_user
 
     # Сохраняем данные пользователя
     user_data_store[user.id] = {
         "login": login,
         "display_name": display_name,
+        "password": password,
         "telegram_id": user.id,
         "telegram_username": f"@{user.username}" if user.username else "—",
         "full_name": user.full_name,
     }
 
-    # Кнопки для админа: Зарегистрировать + Связаться
+    tg_username = f"@{user.username}" if user.username else None
+    tg_link = f"https://t.me/{user.username}" if user.username else f"tg://user?id={user.id}"
+
+    # Кнопки для админа
     keyboard = [[
         InlineKeyboardButton("✅ Зарегистрировать", callback_data=f"register_{user.id}"),
-        InlineKeyboardButton("💬 Написать", url=f"tg://user?id={user.id}"),
+        InlineKeyboardButton("💬 Написать", url=tg_link),
     ]]
 
     admin_text = (
         "🆕 <b>Новая заявка на регистрацию</b>\n\n"
-        f"👤 <b>Telegram:</b> {user.full_name} ({user_data_store[user.id]['telegram_username']})\n"
+        f"👤 <b>Telegram:</b> {user.full_name}"
+        + (f" ({tg_username})" if tg_username else "") + "\n"
         f"🆔 <b>Telegram ID:</b> <code>{user.id}</code>\n"
         f"🔑 <b>Логин:</b> <code>{login}</code>\n"
-        f"📛 <b>Имя:</b> {display_name}\n\n"
+        f"📛 <b>Имя:</b> {display_name}\n"
+        f"🔒 <b>Пароль:</b> <code>{password}</code>\n\n"
         f"Ответить: <code>/msg {user.id} текст</code>"
     )
 
@@ -207,9 +232,13 @@ async def do_register_user(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     login = info["login"]
     display = info["display_name"]
 
+    password = info.get("password", "")
+    tg_username = info.get("telegram_username", "")
+    tg_link = f"https://t.me/{tg_username.lstrip('@')}" if tg_username and tg_username != "—" else f"tg://user?id={user_id}"
+
     # Register in Firebase
     try:
-        password = await register_in_firebase(login, display, user_id)
+        ok = await register_in_firebase(login, display, user_id, password, tg_username)
     except Exception as e:
         logger.error(f"Firebase error: {e}")
         await query.edit_message_text(
@@ -218,10 +247,9 @@ async def do_register_user(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         )
         return
 
-    if password is None:
-        # Login already taken
+    if not ok:
         await query.edit_message_text(
-            text=query.message.text + f"\n\n⚠️ <b>Логин <code>{login}</code> уже занят!</b> Попросите пользователя выбрать другой.",
+            text=query.message.text + f"\n\n⚠️ <b>Логин <code>{login}</code> уже занят!</b>",
             parse_mode="HTML",
         )
         return
@@ -235,7 +263,7 @@ async def do_register_user(update: Update, context: ContextTypes.DEFAULT_TYPE) -
                 "🎉 <b>Поздравляем! Вы зарегистрированы!</b>\n\n"
                 f"🔑 <b>Логин:</b> <code>{login}</code>\n"
                 f"🔒 <b>Пароль:</b> <code>{password}</code>\n\n"
-                "Сохраните эти данные! Пароль можно сменить в профиле.\n"
+                "Сохраните эти данные!\n"
                 "Нажмите кнопку чтобы войти:"
             ),
             reply_markup=InlineKeyboardMarkup(keyboard),
@@ -244,12 +272,12 @@ async def do_register_user(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     except Exception as e:
         logger.error(f"Ошибка уведомления пользователя {user_id}: {e}")
 
-    # Update admin message
+    # Update admin message — show link button
     await query.edit_message_text(
-        text=query.message.text + f"\n\n✅ <b>Зарегистрирован!</b>\nПароль: <code>{password}</code>",
+        text=query.message.text + "\n\n✅ <b>Зарегистрирован!</b>",
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup([[
-            InlineKeyboardButton("💬 Написать", url=f"tg://user?id={user_id}"),
+            InlineKeyboardButton("💬 Написать", url=tg_link),
         ]])
     )
 
@@ -328,6 +356,7 @@ def main() -> None:
         states={
             WAITING_LOGIN: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_login)],
             WAITING_DISPLAY_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_display_name)],
+            WAITING_PASSWORD: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_password)],
         },
         fallbacks=[CommandHandler("cancel", cancel)],
     )
