@@ -13,8 +13,9 @@ from telegram.ext import (
 # ==============================
 # НАСТРОЙКИ — ЗАПОЛНИ ПЕРЕД ЗАПУСКОМ
 # ==============================
-BOT_TOKEN = "8647321567:AAHWMepNC6eme7EE2rjzDhsVsEbLV1u-pDI"          # токен от @BotFather
-ADMIN_CHAT_ID = 1714097750             # твой личный Telegram chat_id (узнать через @userinfobot)
+import os
+BOT_TOKEN = os.environ["BOT_TOKEN"]
+ADMIN_CHAT_ID = int(os.environ["ADMIN_CHAT_ID"])           # твой личный Telegram chat_id (узнать через @userinfobot)
 # ==============================
 
 logging.basicConfig(
@@ -182,4 +183,5 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+
     main()
