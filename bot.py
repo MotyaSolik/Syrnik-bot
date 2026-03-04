@@ -310,10 +310,13 @@ async def receive_password(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     tg_link = f"https://t.me/{user.username}" if user.username else f"tg://user?id={user.id}"
 
     # Кнопки для админа
-    keyboard = [[
-        InlineKeyboardButton("✅ Зарегистрировать", callback_data=f"register_{user.id}"),
-        InlineKeyboardButton("💬 Написать", url=tg_link),
-    ]]
+    keyboard = [
+        [
+            InlineKeyboardButton("✅ Зарегистрировать", callback_data=f"register_{user.id}"),
+            InlineKeyboardButton("☑️", callback_data=f"manualreg_{user.id}"),
+        ],
+        [InlineKeyboardButton("💬 Написать", url=tg_link)],
+    ]
 
     admin_text = (
         "🆕 <b>Новая заявка на регистрацию</b>\n\n"
@@ -417,6 +420,56 @@ async def do_register_user(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     )
 
 
+
+
+async def manual_register_notify(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """☑️ — уведомляет пользователя об одобрении без создания аккаунта в Firebase."""
+    query = update.callback_query
+    await query.answer()
+
+    if update.effective_user.id != ADMIN_CHAT_ID:
+        await query.answer("⛔ Только администратор.", show_alert=True)
+        return
+
+    user_id = int(query.data.split("_")[1])
+    info = user_data_store.get(user_id)
+
+    if not info:
+        await query.answer("❌ Данные заявки не найдены", show_alert=True)
+        return
+
+    login = info["login"]
+    password = info.get("password", "")
+    tg_username = info.get("telegram_username", "")
+    tg_link = f"https://t.me/{tg_username.lstrip('@')}" if tg_username and tg_username != "—" else f"tg://user?id={user_id}"
+
+    # Notify user with credentials (same as auto-register)
+    keyboard = [[InlineKeyboardButton("🌐 Войти на сайт", url="https://syrnik-wallet.netlify.app/")]]
+    try:
+        await context.bot.send_message(
+            chat_id=user_id,
+            text=(
+                "🎉 <b>Поздравляем! Вы зарегистрированы!</b>\n\n"
+                f"🔑 <b>Логин:</b> <code>{login}</code>\n"
+                f"🔒 <b>Пароль:</b> <code>{password}</code>\n\n"
+                "Сохраните эти данные!\n"
+                "Нажмите кнопку чтобы войти:"
+            ),
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode="HTML",
+        )
+    except Exception as e:
+        logger.error(f"Ошибка уведомления пользователя {user_id}: {e}")
+
+    # Update admin message
+    await query.edit_message_text(
+        text=query.message.text + "\n\n☑️ <b>Уведомление отправлено</b> (аккаунт создайте вручную)",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("🆙 Стартовый баланс", callback_data=f"startbal_{user_id}"),
+            InlineKeyboardButton("💬 Написать", url=tg_link),
+        ]])
+    )
 
 async def give_start_balance(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Начислить 5 сырничков новому пользователю."""
@@ -570,6 +623,7 @@ def main() -> None:
     # ВАЖНО: register_ должен быть до approve_ чтобы не перехватывало
     app.add_handler(CallbackQueryHandler(do_register_user, pattern=r"^register_\d+$"))
     app.add_handler(CallbackQueryHandler(give_start_balance, pattern=r"^startbal_\d+$"))
+    app.add_handler(CallbackQueryHandler(manual_register_notify, pattern=r"^manualreg_\d+$"))
     app.add_handler(CallbackQueryHandler(noop, pattern=r"^noop$"))
 
     app.add_handler(MessageHandler(
