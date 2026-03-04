@@ -498,7 +498,25 @@ async def give_start_balance(update: Update, context: ContextTypes.DEFAULT_TYPE)
             return
 
         users[key]["balance"] = users[key].get("balance", 0) + 5
+
+        # Add transaction record
+        from datetime import datetime
+        now = datetime.now()
+        time_str = now.strftime("%H:%M, %d.%m.%Y")
+        txs = data.get("txs", {})
+        if isinstance(txs, list):
+            txs = {str(i): t for i, t in enumerate(txs)}
+        new_tx = {
+            "type": "plus",
+            "desc": f"Начислено — {users[key].get('display', '')} · Стартовый баланс",
+            "amt": "+5",
+            "participants": [users[key].get("login", "")],
+            "time": time_str,
+        }
+        txs[str(len(txs))] = new_tx
+
         await fb_set("syrniki/users", users)
+        await fb_set("syrniki/txs", txs)
 
         # Notify user
         try:
