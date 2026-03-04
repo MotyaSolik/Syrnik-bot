@@ -14,8 +14,9 @@ from telegram.ext import (
 # НАСТРОЙКИ — ЗАПОЛНИ ПЕРЕД ЗАПУСКОМ
 # ==============================
 import os
+
 BOT_TOKEN = os.environ["BOT_TOKEN"]
-ADMIN_CHAT_ID = int(os.environ["ADMIN_CHAT_ID"])           # твой личный Telegram chat_id (узнать через @userinfobot)
+ADMIN_CHAT_ID = int(os.environ["ADMIN_CHAT_ID"])          # твой личный Telegram chat_id (узнать через @userinfobot)
 # ==============================
 
 logging.basicConfig(
@@ -85,14 +86,18 @@ async def receive_display_name(update: Update, context: ContextTypes.DEFAULT_TYP
     context.user_data["telegram_id"] = user.id
     context.user_data["telegram_username"] = f"@{user.username}" if user.username else "—"
 
-    # Кнопка для подтверждения регистрации (у админа)
-    keyboard = [
+    # Кнопки для админа: подтверждение + связь с пользователем
+    bot_username = (await context.bot.get_me()).username
+    chat_link = f"https://t.me/{user.username}" if user.username else None
+
+    buttons = [
+        [InlineKeyboardButton("Зарегестрирован ✅", callback_data=f"approve_{user.id}")],
         [InlineKeyboardButton(
-            "Зарегестрирован ✅",
-            callback_data=f"approve_{user.id}"
-        )]
+            "Связаться через бот 🔗",
+            url=chat_link if chat_link else f"tg://user?id={user.id}"
+        )],
     ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
+    reply_markup = InlineKeyboardMarkup(buttons)
 
     admin_text = (
         "🆕 <b>Новая заявка на регистрацию</b>\n\n"
@@ -183,5 +188,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-
     main()
