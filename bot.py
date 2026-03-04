@@ -29,12 +29,14 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Состояния диалога регистрации
-WAITING_LOGIN, WAITING_DISPLAY_NAME, WAITING_PASSWORD = range(3)
+WAITING_LOGIN, WAITING_DISPLAY_NAME, WAITING_PASSWORD, EMOJI_LOGIN, EMOJI_PASSWORD = range(5)
 
 # Хранилище: user_id -> данные пользователя
 user_data_store = {}
 
 EMOJIS = ['🐻','🐼','🦊','🐸','🐯','🦁','🐺','🦉','🐧','🦋','🐬','🦄','🐙','🌟','🍀','🦝','🐨','🦔','🐉','🌈','🦅','🦩','🐝','🦀','🍕','🎸','🚀','💎','🎯','⚡','🦆','🥞','🦢','🐓']
+# System emojis excluded from user picker
+EMOJIS_SYSTEM = ['🔰','🤖','💠','☑️']
 
 def emoji_for(login: str) -> str:
     s = sum(ord(c) for c in login)
@@ -99,10 +101,13 @@ async def register_in_firebase(login: str, display: str, telegram_id: int, passw
 # ── Bot handlers ──
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    keyboard = [[InlineKeyboardButton("📝 Регистрация", callback_data="register")]]
+    keyboard = [
+        [InlineKeyboardButton("📝 Регистрация", callback_data="register")],
+        [InlineKeyboardButton("😊 Сменить эмодзи", callback_data="emoji_change")],
+    ]
     await update.message.reply_text(
         "👋 Добро пожаловать в <b>Сырники Wallet</b>!\n\n"
-        "Нажмите кнопку ниже, чтобы зарегистрироваться.",
+        "Нажмите кнопку ниже, чтобы зарегистрироваться или сменить эмодзи.",
         reply_markup=InlineKeyboardMarkup(keyboard),
         parse_mode="HTML",
     )
@@ -118,6 +123,135 @@ async def register_button(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     )
     return WAITING_LOGIN
 
+
+
+
+async def emoji_change_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Начало смены эмодзи — просим логин."""
+    query = update.callback_query
+    await query.answer()
+    await query.edit_message_text(
+        "😊 <b>Смена эмодзи</b>\n\n"
+        "Введите ваш <b>логин</b>:",
+        parse_mode="HTML",
+    )
+    return EMOJI_LOGIN
+
+
+async def emoji_receive_login(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Получили логин — просим пароль."""
+    context.user_data["emoji_login"] = update.message.text.strip().lower()
+    await update.message.reply_text(
+        "🔒 Теперь введите ваш <b>пароль</b>:",
+        parse_mode="HTML",
+    )
+    return EMOJI_PASSWORD
+
+
+async def emoji_receive_password(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Проверяем логин+пароль в Firebase, показываем эмодзи-кнопки."""
+    password = update.message.text.strip()
+    login = context.user_data.get("emoji_login", "")
+
+    try:
+        data = await fb_get("syrniki")
+        users = data.get("users", {}) if data else {}
+        if isinstance(users, list):
+            users = {str(i): u for i, u in enumerate(users)}
+
+        found_key = None
+        found_user = None
+        for k, u in users.items():
+            if u.get("login", "").lower() == login and u.get("password") == password:
+                found_key = k
+                found_user = u
+                break
+
+        if not found_user:
+            await update.message.reply_text(
+                "❌ Неверный логин или пароль. Попробуйте ещё раз — нажмите /start"
+            )
+            return ConversationHandler.END
+
+        # Store key for later
+        context.user_data["emoji_user_key"] = found_key
+        context.user_data["emoji_current"] = found_user.get("emoji", "")
+
+        # Build emoji keyboard (5 per row)
+        buttons = []
+        row = []
+        for i, e in enumerate(EMOJIS):
+            row.append(InlineKeyboardButton(e, callback_data=f"setemoji_{e}"))
+            if len(row) == 5:
+                buttons.append(row)
+                row = []
+        if row:
+            buttons.append(row)
+        buttons.append([InlineKeyboardButton("❌ Отмена", callback_data="emoji_cancel")])
+
+        current = found_user.get("emoji", "?")
+        await update.message.reply_text(
+            f"✅ Авторизован как <b>{found_user.get('display','')}</b>\n"
+            f"Текущий эмодзи: {current}\n\n"
+            "Выбери новый:",
+            reply_markup=InlineKeyboardMarkup(buttons),
+            parse_mode="HTML",
+        )
+
+    except Exception as e:
+        logger.error(f"emoji auth error: {e}")
+        await update.message.reply_text("⚠️ Ошибка подключения к базе. Попробуйте позже.")
+
+    return ConversationHandler.END
+
+
+async def set_emoji(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Пользователь выбрал эмодзи — сохраняем в Firebase."""
+    query = update.callback_query
+    await query.answer()
+
+    chosen = query.data.replace("setemoji_", "", 1)
+
+    # Safety check — no system emojis
+    if chosen in EMOJIS_SYSTEM:
+        await query.answer("⛔ Этот эмодзи недоступен", show_alert=True)
+        return
+
+    user_key = context.user_data.get("emoji_user_key")
+    if not user_key:
+        await query.edit_message_text("⚠️ Сессия истекла. Начните заново через /start")
+        return
+
+    try:
+        data = await fb_get("syrniki")
+        users = data.get("users", {}) if data else {}
+        if isinstance(users, list):
+            users = {str(i): u for i, u in enumerate(users)}
+
+        if user_key not in users:
+            await query.edit_message_text("❌ Пользователь не найден.")
+            return
+
+        users[user_key]["emoji"] = chosen
+        await fb_set("syrniki/users", users)
+
+        await query.edit_message_text(
+            f"✅ Эмодзи обновлён на {chosen}!\n\nОткрой кошелёк чтобы увидеть изменения.",
+            parse_mode="HTML",
+        )
+        context.user_data.pop("emoji_user_key", None)
+        context.user_data.pop("emoji_current", None)
+
+    except Exception as e:
+        logger.error(f"set_emoji error: {e}")
+        await query.edit_message_text("⚠️ Ошибка сохранения. Попробуйте позже.")
+
+
+async def emoji_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+    await query.edit_message_text("❌ Смена эмодзи отменена.")
+    context.user_data.pop("emoji_user_key", None)
 
 async def receive_login(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     login = update.message.text.strip()
@@ -418,9 +552,21 @@ def main() -> None:
         fallbacks=[CommandHandler("cancel", cancel)],
     )
 
+    emoji_conv_handler = ConversationHandler(
+        entry_points=[CallbackQueryHandler(emoji_change_start, pattern="^emoji_change$")],
+        states={
+            EMOJI_LOGIN: [MessageHandler(filters.TEXT & ~filters.COMMAND, emoji_receive_login)],
+            EMOJI_PASSWORD: [MessageHandler(filters.TEXT & ~filters.COMMAND, emoji_receive_password)],
+        },
+        fallbacks=[CommandHandler("cancel", cancel)],
+    )
+
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("msg", admin_reply))
     app.add_handler(conv_handler)
+    app.add_handler(emoji_conv_handler)
+    app.add_handler(CallbackQueryHandler(set_emoji, pattern=r"^setemoji_.+$"))
+    app.add_handler(CallbackQueryHandler(emoji_cancel, pattern="^emoji_cancel$"))
     # ВАЖНО: register_ должен быть до approve_ чтобы не перехватывало
     app.add_handler(CallbackQueryHandler(do_register_user, pattern=r"^register_\d+$"))
     app.add_handler(CallbackQueryHandler(give_start_balance, pattern=r"^startbal_\d+$"))
