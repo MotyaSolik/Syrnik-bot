@@ -544,26 +544,36 @@ async def give_start_balance(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 
 # ── Broadcast ──
-BROADCAST_TEMPLATE = (
-    "📢 <b>Обновление Сырники Wallet!</b>\n\n"
-    "🆕 <b>Что нового:</b>\n"
-    "• \n"
-    "• \n"
-    "• \n\n"
-    "🌐 Откройте приложение чтобы увидеть изменения!"
-)
-
 async def broadcast_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Admin starts broadcast — sends template to fill in."""
+    """Admin starts broadcast — sends template with current version."""
     if update.effective_user.id != ADMIN_CHAT_ID:
         await update.message.reply_text("⛔ Только администратор.")
         return ConversationHandler.END
 
+    # Fetch current version from Firebase
+    version = "?"
+    try:
+        data = await fb_get("syrniki")
+        version = data.get("version", "?") if data else "?"
+    except Exception:
+        pass
+
+    template = (
+        f"📢 <b>Обновление Сырники Wallet!</b>\n"
+        f"🔖 <b>Версия: v{version}</b>\n\n"
+        "🆕 <b>Что нового:</b>\n"
+        "• \n"
+        "• \n"
+        "• \n\n"
+        "🌐 Откройте приложение чтобы увидеть изменения!"
+    )
+
     await update.message.reply_text(
         "📢 <b>Рассылка обновления</b>\n\n"
-        "Отправь текст сообщения. Используй этот шаблон (можно редактировать):\n\n"
-        f"<code>{BROADCAST_TEMPLATE}</code>\n\n"
-        "Или напиши своё сообщение. /cancel — отмена.",
+        f"Текущая версия: <b>v{version}</b>\n\n"
+        "Отправь текст сообщения. Шаблон:\n\n"
+        f"<code>{template}</code>\n\n"
+        "/cancel — отмена.",
         parse_mode="HTML",
     )
     return BROADCAST_TEXT
