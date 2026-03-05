@@ -29,7 +29,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Состояния диалога регистрации
-WAITING_LOGIN, WAITING_DISPLAY_NAME, WAITING_PASSWORD, EMOJI_LOGIN, EMOJI_PASSWORD = range(5)
+WAITING_LOGIN, WAITING_DISPLAY_NAME, WAITING_PASSWORD, EMOJI_LOGIN, EMOJI_PASSWORD, BROADCAST_TEXT = range(6)
 
 # Хранилище: user_id -> данные пользователя
 user_data_store = {}
@@ -542,6 +542,80 @@ async def give_start_balance(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 
 
+
+# ── Broadcast ──
+BROADCAST_TEMPLATE = (
+    "📢 <b>Обновление Сырники Wallet!</b>\n\n"
+    "🆕 <b>Что нового:</b>\n"
+    "• \n"
+    "• \n"
+    "• \n\n"
+    "🌐 Откройте приложение чтобы увидеть изменения!"
+)
+
+async def broadcast_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Admin starts broadcast — sends template to fill in."""
+    if update.effective_user.id != ADMIN_CHAT_ID:
+        await update.message.reply_text("⛔ Только администратор.")
+        return ConversationHandler.END
+
+    await update.message.reply_text(
+        "📢 <b>Рассылка обновления</b>\n\n"
+        "Отправь текст сообщения. Используй этот шаблон (можно редактировать):\n\n"
+        f"<code>{BROADCAST_TEMPLATE}</code>\n\n"
+        "Или напиши своё сообщение. /cancel — отмена.",
+        parse_mode="HTML",
+    )
+    return BROADCAST_TEXT
+
+
+async def broadcast_send(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Receive broadcast text and send to all users with telegramId."""
+    text = update.message.text.strip()
+
+    # Load users from Firebase
+    try:
+        data = await fb_get("syrniki")
+        users = data.get("users", {}) if data else {}
+        if isinstance(users, list):
+            users = {str(i): u for i, u in enumerate(users)}
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка Firebase: {e}")
+        return ConversationHandler.END
+
+    tg_users = [(u["telegramId"], u.get("display","?")) for u in users.values() if u.get("telegramId")]
+
+    if not tg_users:
+        await update.message.reply_text("⚠️ Нет пользователей с Telegram ID.")
+        return ConversationHandler.END
+
+    keyboard = [[InlineKeyboardButton("🌐 Открыть кошелёк", url="https://syrnik-wallet.netlify.app/")]]
+
+    sent, failed = 0, 0
+    status_msg = await update.message.reply_text(f"📤 Отправляю {len(tg_users)} пользователям...")
+
+    for tg_id, display in tg_users:
+        try:
+            await context.bot.send_message(
+                chat_id=tg_id,
+                text=text,
+                parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup(keyboard),
+            )
+            sent += 1
+        except Exception as e:
+            logger.warning(f"Не удалось отправить {display} ({tg_id}): {e}")
+            failed += 1
+
+    await status_msg.edit_text(
+        f"✅ <b>Рассылка завершена!</b>\n\n"
+        f"📨 Отправлено: {sent}\n"
+        f"❌ Не удалось: {failed}",
+        parse_mode="HTML",
+    )
+    return ConversationHandler.END
+
+
 async def approve_task_tg(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Admin approves task from Telegram button."""
     query = update.callback_query
@@ -775,10 +849,19 @@ def main() -> None:
         fallbacks=[CommandHandler("cancel", cancel)],
     )
 
+    broadcast_conv = ConversationHandler(
+        entry_points=[CommandHandler("broadcast", broadcast_start)],
+        states={
+            BROADCAST_TEXT: [MessageHandler(filters.TEXT & ~filters.COMMAND, broadcast_send)],
+        },
+        fallbacks=[CommandHandler("cancel", cancel)],
+    )
+
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("msg", admin_reply))
     app.add_handler(conv_handler)
     app.add_handler(emoji_conv_handler)
+    app.add_handler(broadcast_conv)
     app.add_handler(CallbackQueryHandler(set_emoji, pattern=r"^setemoji_.+$"))
     app.add_handler(CallbackQueryHandler(emoji_cancel, pattern="^emoji_cancel$"))
     # ВАЖНО: register_ должен быть до approve_ чтобы не перехватывало
