@@ -541,6 +541,149 @@ async def give_start_balance(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await query.answer(f"⚠️ Ошибка: {e}", show_alert=True)
 
 
+
+async def approve_task_tg(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Admin approves task from Telegram button."""
+    query = update.callback_query
+    await query.answer()
+
+    if update.effective_user.id != ADMIN_CHAT_ID:
+        await query.answer("⛔ Только администратор.", show_alert=True)
+        return
+
+    sub_id = int(query.data.split("_")[1])
+
+    try:
+        data = await fb_get("syrniki")
+        if not data:
+            await query.answer("❌ Ошибка Firebase", show_alert=True)
+            return
+
+        subs = data.get("taskSubmissions", {})
+        if isinstance(subs, list):
+            subs = {str(i): s for i, s in enumerate(subs)}
+
+        # Find submission
+        sub_key = None
+        sub = None
+        for k, s in subs.items():
+            if s.get("id") == sub_id:
+                sub_key = k
+                sub = s
+                break
+
+        if not sub:
+            await query.answer("❌ Заявка не найдена", show_alert=True)
+            return
+
+        if sub.get("status") == "approved":
+            await query.answer("✅ Уже подтверждено", show_alert=True)
+            return
+
+        sub["status"] = "approved"
+        subs[sub_key] = sub
+
+        # Add reward to user
+        users = data.get("users", {})
+        if isinstance(users, list):
+            users = {str(i): u for i, u in enumerate(users)}
+        user_id_str = str(sub["userId"])
+        if user_id_str in users:
+            users[user_id_str]["balance"] = users[user_id_str].get("balance", 0) + sub["taskReward"]
+
+        # Add tx record
+        from datetime import datetime
+        now = datetime.now()
+        time_str = now.strftime("%H:%M, %d.%m.%Y")
+        txs = data.get("txs", {})
+        if isinstance(txs, list):
+            txs = {str(i): t for i, t in enumerate(txs)}
+        tx_idx = len(txs)
+        # Insert at front
+        new_txs = {str(i+1): v for i, v in enumerate(txs.values())}
+        new_txs["0"] = {
+            "type": "plus",
+            "desc": f"🏆 Задача выполнена — {sub['userDisplay']} · {sub['taskName']}",
+            "amt": f"+{sub['taskReward']}",
+            "participants": [sub["userLogin"]],
+            "time": time_str,
+        }
+
+        await fb_set("syrniki/taskSubmissions", subs)
+        await fb_set("syrniki/users", users)
+        await fb_set("syrniki/txs", new_txs)
+
+        # Notify user
+        try:
+            await context.bot.send_message(
+                chat_id=sub["userId"],
+                text=f"🎉 <b>Задача принята!</b>\n\n📌 «{sub['taskName']}»\n🏆 +{sub['taskReward']} 🧀 начислено!",
+                parse_mode="HTML",
+            )
+        except Exception as e:
+            logger.error(f"notify user task approved: {e}")
+
+        await query.edit_message_reply_markup(
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton(f"✅ Принято (+{sub['taskReward']} 🧀)", callback_data="noop"),
+            ]])
+        )
+
+    except Exception as e:
+        logger.error(f"approve_task_tg error: {e}")
+        await query.answer(f"⚠️ Ошибка: {e}", show_alert=True)
+
+
+async def reject_task_tg(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Admin rejects task from Telegram button."""
+    query = update.callback_query
+    await query.answer()
+
+    if update.effective_user.id != ADMIN_CHAT_ID:
+        await query.answer("⛔ Только администратор.", show_alert=True)
+        return
+
+    sub_id = int(query.data.split("_")[1])
+
+    try:
+        data = await fb_get("syrniki")
+        subs = data.get("taskSubmissions", {}) if data else {}
+        if isinstance(subs, list):
+            subs = {str(i): s for i, s in enumerate(subs)}
+
+        sub_key = None
+        sub = None
+        for k, s in subs.items():
+            if s.get("id") == sub_id:
+                sub_key = k; sub = s; break
+
+        if not sub:
+            await query.answer("❌ Заявка не найдена", show_alert=True)
+            return
+
+        sub["status"] = "rejected"
+        subs[sub_key] = sub
+        await fb_set("syrniki/taskSubmissions", subs)
+
+        try:
+            await context.bot.send_message(
+                chat_id=sub["userId"],
+                text=f"❌ <b>Задача отклонена</b>\n\n📌 «{sub['taskName']}»\nПопробуй ещё раз!",
+                parse_mode="HTML",
+            )
+        except Exception as e:
+            logger.error(f"notify user task rejected: {e}")
+
+        await query.edit_message_reply_markup(
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("✕ Отклонено", callback_data="noop"),
+            ]])
+        )
+
+    except Exception as e:
+        logger.error(f"reject_task_tg error: {e}")
+        await query.answer(f"⚠️ Ошибка: {e}", show_alert=True)
+
 async def noop(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.callback_query.answer()
 
@@ -643,6 +786,8 @@ def main() -> None:
     app.add_handler(CallbackQueryHandler(give_start_balance, pattern=r"^startbal_\d+$"))
     app.add_handler(CallbackQueryHandler(manual_register_notify, pattern=r"^manualreg_\d+$"))
     app.add_handler(CallbackQueryHandler(noop, pattern=r"^noop$"))
+    app.add_handler(CallbackQueryHandler(approve_task_tg, pattern=r"^approvetask_\d+$"))
+    app.add_handler(CallbackQueryHandler(reject_task_tg, pattern=r"^rejecttask_\d+$"))
 
     app.add_handler(MessageHandler(
         filters.TEXT & ~filters.COMMAND & ~filters.Chat(ADMIN_CHAT_ID),
