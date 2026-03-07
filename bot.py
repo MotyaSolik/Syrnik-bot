@@ -392,7 +392,7 @@ async def do_register_user(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         return
 
     # Notify user with credentials
-    keyboard = [[InlineKeyboardButton("🌐 Войти на сайт", url="https://syrnik-wallet.netlify.app/")]]
+    keyboard = [[InlineKeyboardButton("🌐 Войти на сайт", url="https://syrnik-wallet.motya-solik.workers.dev/")]]
     try:
         await context.bot.send_message(
             chat_id=user_id,
@@ -444,7 +444,7 @@ async def manual_register_notify(update: Update, context: ContextTypes.DEFAULT_T
     tg_link = f"https://t.me/{tg_username.lstrip('@')}" if tg_username and tg_username != "—" else f"tg://user?id={user_id}"
 
     # Notify user with credentials (same as auto-register)
-    keyboard = [[InlineKeyboardButton("🌐 Войти на сайт", url="https://syrnik-wallet.netlify.app/")]]
+    keyboard = [[InlineKeyboardButton("🌐 Войти на сайт", url="https://syrnik-wallet.motya-solik.workers.dev/")]]
     try:
         await context.bot.send_message(
             chat_id=user_id,
@@ -599,7 +599,7 @@ async def broadcast_send(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await update.message.reply_text("⚠️ Нет пользователей с Telegram ID.")
         return ConversationHandler.END
 
-    keyboard = [[InlineKeyboardButton("🌐 Открыть кошелёк", url="https://syrnik-wallet.netlify.app/")]]
+    keyboard = [[InlineKeyboardButton("🌐 Открыть кошелёк", url="https://syrnik-wallet.motya-solik.workers.dev/")]]
 
     sent, failed = 0, 0
     status_msg = await update.message.reply_text(f"📤 Отправляю {len(tg_users)} пользователям...")
